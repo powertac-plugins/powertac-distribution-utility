@@ -16,20 +16,26 @@
 
 package org.powertac.distributionutility
 
+import java.util.List;
+
+import org.joda.time.Instant;
+import org.powertac.common.Timeslot;
 import org.powertac.common.interfaces.DistributionUtility
-import org.powertac.common.Timeslot
-import org.powertac.common.command.CashDoUpdateCmd
-import org.powertac.common.command.PositionDoUpdateCmd
+import org.powertac.common.interfaces.TimeslotPhaseProcessor
 
-class DistributionUtilityService implements DistributionUtility {
+class DistributionUtilityService implements DistributionUtility, TimeslotPhaseProcessor
+{
+	def accountingService
+	
+	static transactional = true
 
-  static transactional = true
-
-  List balanceTimeslot(Timeslot currentTimeslot) {
-    List commands = []
-    commands.add(new CashDoUpdateCmd())
-    commands.add(new PositionDoUpdateCmd())
-    log.info "balanceTimeslot commands ${commands}"
-    return commands
-  }
+	public void activate(Instant time, int phaseNumber) {
+		// TODO Auto-generated method stub
+		
+	}
+	public List balanceTimeslot(Timeslot currentTimeslot) {
+		// TODO Auto-generated method stub
+		return null;
+	}
+	
 }
