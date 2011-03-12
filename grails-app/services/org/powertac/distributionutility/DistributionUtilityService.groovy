@@ -25,17 +25,19 @@ import org.powertac.common.interfaces.TimeslotPhaseProcessor
 
 class DistributionUtilityService implements DistributionUtility, TimeslotPhaseProcessor
 {
-	def accountingService
-	
-	static transactional = true
+  def accountingService
 
-	public void activate(Instant time, int phaseNumber) {
-		// TODO Auto-generated method stub
-		
-	}
-	public List balanceTimeslot(Timeslot currentTimeslot) {
-		// TODO Auto-generated method stub
-		return null;
-	}
-	
+  static transactional = true
+
+  public void activate (Instant time, int phaseNumber) 
+  {
+    // TODO Auto-generated method stub
+
+  }
+  public List balanceTimeslot (Timeslot currentTimeslot) 
+  {
+    // TODO Auto-generated method stub
+    return null;
+  }
+
 }
