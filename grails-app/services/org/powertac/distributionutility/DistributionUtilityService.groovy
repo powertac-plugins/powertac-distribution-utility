@@ -17,6 +17,7 @@
 package org.powertac.distributionutility
 
 import java.util.List;
+import java.math.BigDecimal;
 
 import org.joda.time.Instant;
 import org.powertac.common.Timeslot;
@@ -26,18 +27,55 @@ import org.powertac.common.interfaces.TimeslotPhaseProcessor
 class DistributionUtilityService implements DistributionUtility, TimeslotPhaseProcessor
 {
   def accountingService
-
+  
   static transactional = true
+  
+  // Rate per kWH
+  BigDecimal imbalancePenaltyRate = 0.1
 
   public void activate (Instant time, int phaseNumber) 
   {
-    // TODO Auto-generated method stub
+    // Compute overall balance
+	// TODO compute balance of each individual broker  
+	
+	List brokerList = Broker.list()
+	if ( brokerList == null ){
+		log.error("Failed to retrieve broker list")
+		return
+	}
+	
+	BigDecimal netProduction = 0.0
+	for ( b in brokerList ){
+		netProduction += accountingService.getCurrentMarketPosition(b)
+		netLoad += accountingService.getCurrentNetLoad(b)
+	}
+	
+	BigDecimal marketBalance = netProduction - netLoad
+	
+	  
+	// Run the balancing market
+	// Transactions are posted to the Accounting Service and Brokers are notified of balancing transactions
+	List txList = balanceTimeslot(timeslot.currentTimeslot(), brokerList, marketBalance)
 
   }
-  public List balanceTimeslot (Timeslot currentTimeslot) 
+  
+  public List balanceTimeslot (Timeslot currentTimeslot, List brokerList, BigDecimal marketBalance) 
   {
-    // TODO Auto-generated method stub
-    return null;
+	if ( marketBalance == 0.0 )
+		return null
+	else{
+		List balancingMarketTxs = []
+		BigDecimal imbalanceQuantity = marketBalance / brokerList.size()
+		
+		// Charge each broker an equal amount if marketBalance is neg, credit each broker if pos
+		for ( b in brokerList ){
+			balancingMarketTxs.add( accountingService.addMarketTransaction( b,
+																		   	currentTimeslot,
+																			(imbalanceQuantity * imbalancePenaltyRate),
+																			imbalanceQuantity ) )
+		}
+		return balancingMarketTxs
+	}
   }
 
 }
