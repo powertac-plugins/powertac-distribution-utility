@@ -16,28 +16,73 @@
 
 package org.powertac.distributionutility
 
-import java.util.List;
+import java.util.List
+import java.math.BigDecimal
 
-import org.joda.time.Instant;
-import org.powertac.common.Timeslot;
-import org.powertac.common.interfaces.DistributionUtility
+import org.joda.time.Instant
+import org.powertac.common.Broker
+import org.powertac.common.Timeslot
 import org.powertac.common.interfaces.TimeslotPhaseProcessor
 
-class DistributionUtilityService implements DistributionUtility, TimeslotPhaseProcessor
+class DistributionUtilityService implements TimeslotPhaseProcessor
 {
-  def accountingService
 
+def accountingService
+  
   static transactional = true
+  
+  // Rate per kWH
+  BigDecimal imbalancePenaltyRate = 0.1
 
   public void activate (Instant time, int phaseNumber) 
-  {
-    // TODO Auto-generated method stub
+  {	
+	List brokerList = Broker.list()
+	if ( brokerList == null ){
+		log.error("Failed to retrieve broker list")
+		return
+	}
+	  
+	// Run the balancing market
+	// Transactions are posted to the Accounting Service and Brokers are notified of balancing transactions
+	List txList = balanceTimeslot(timeslot.currentTimeslot(), brokerList)
 
   }
-  public List balanceTimeslot (Timeslot currentTimeslot) 
+  
+  /**
+   * Returns the difference between a broker's current market position and its net load.  
+   * Note: market position is computed in MWh and net load is computed in kWh, conversion
+   * is needed to compute the difference.
+   *
+   * @return a broker's current energy balance within its market. Pos for over-production,
+   * neg for under-production
+   */
+  public BigDecimal brokerBalance(Broker broker){
+	  return accountingService.getCurrentMarketPosition(broker) - 
+	  		 (accountingService.getCurrentNetLoad(broker) / 1000.0)
+  }
+  
+  /**
+   * Generates a list of MarketTransactions that balance the overall market.  Transactions
+   * are generated on a per-broker basis depending on the broker's balance within its own market.
+   * 
+   * @return List of MarketTransactions 
+   */
+  public List balanceTimeslot (Timeslot currentTimeslot, List brokerList) 
   {
-    // TODO Auto-generated method stub
-    return null;
+	  List balancingMarketTxs = []
+	  BigDecimal imbalanceQuantity
+		
+	  // Charge each broker an equal amount if marketBalance is neg, credit each broker if pos
+	  for ( b in brokerList ){
+		  imbalanceQuantity = brokerBalance(b)
+		  if( imbalanceQuantity != 0.0 ){
+			  balancingMarketTxs.add( accountingService.addMarketTransaction( b,
+			  	 															  currentTimeslot,
+																			  (imbalanceQuantity * imbalancePenaltyRate),
+																			  imbalanceQuantity ) )
+		  }
+	  }
+	  return balancingMarketTxs
   }
 
 }
