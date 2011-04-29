@@ -364,10 +364,6 @@ class DistributionUtilityServiceTests extends GrailsUnitTestCase
 				i++
 			}
 			if ( i < brokerList.size() ){
-				println("inner loop reached\n")
-				println("i = " + i + "\n")
-				println("broker id = " + brokerList[i].id + "\n")
-				println("mtx broker id = " + tx.broker.id + "\n")
 				assertEquals("broker correctly balanced", 0.0,
 					         (distributionUtilityService.brokerBalance(brokerList[i]) - tx.quantity),
 							 1e-6)
