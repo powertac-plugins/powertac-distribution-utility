@@ -90,7 +90,7 @@ class DistributionUtilityServiceTests extends GrailsUnitTestCase
 		tariffList = []
     }
 	
-	void testBrokerBalance() {
+	void testGetMarketBalance() {
 		BigDecimal balance = 0.0
 		
 		// Create two tariff specifications, one for consumption and one for production
@@ -127,19 +127,19 @@ class DistributionUtilityServiceTests extends GrailsUnitTestCase
 		tsubConsume.usePower(500.0)
 		balance -= 500.0 / 1000.0
 		assertEquals("correct balance", 
-					 distributionUtilityService.brokerBalance(brokerList[0]),
+					 distributionUtilityService.getMarketBalance(brokerList[0]),
 					 balance, 1e-6)
 		
 		tsubProduce.usePower(-500.0)
 		balance += 500.0 / 1000.0
 		assertEquals("correct balance",
-					 distributionUtilityService.brokerBalance(brokerList[0]),
+					 distributionUtilityService.getMarketBalance(brokerList[0]),
 					 balance, 1e-6)
 		
 		tsubConsume.usePower(50000)
 		balance -= 50000 / 1000
 		assertEquals("correct balance",
-					 distributionUtilityService.brokerBalance(brokerList[0]),
+					 distributionUtilityService.getMarketBalance(brokerList[0]),
 					 balance, 1e-6)
 	}
 
@@ -351,7 +351,7 @@ class DistributionUtilityServiceTests extends GrailsUnitTestCase
 		
 		// Compute market balance
 		for( b in brokerList ){
-			balance += distributionUtilityService.brokerBalance(b)
+			balance += distributionUtilityService.getMarketBalance(b)
 		}
 		List mtxs = 
 			distributionUtilityService.balanceTimeslot(Timeslot.currentTimeslot(), brokerList)
@@ -365,7 +365,7 @@ class DistributionUtilityServiceTests extends GrailsUnitTestCase
 			}
 			if ( i < brokerList.size() ){
 				assertEquals("broker correctly balanced", 0.0,
-					         (distributionUtilityService.brokerBalance(brokerList[i]) - tx.quantity),
+					         (distributionUtilityService.getMarketBalance(brokerList[i]) - tx.quantity),
 							 1e-6)
 				balance -= tx.quantity
 			}
@@ -373,4 +373,66 @@ class DistributionUtilityServiceTests extends GrailsUnitTestCase
 		
 		assertEquals("market fully balanced", 0.0, balance, 1e-6)
 	}
-}
+	
+	void testNonControllableBalancingCharges() {
+		// Create a tariff specification for each broker
+		TariffSpecification tariffSpec1 =
+			new TariffSpecification(broker: brokerList[0],
+									expiration: exp,
+									minDuration: TimeService.WEEK * 8)
+		tariffSpec1.addToRates(new Rate(value: 0.1))
+		assert(tariffSpec1.save())
+		tariffSpecList[0] = tariffSpec1
+		
+		TariffSpecification tariffSpec2=
+			new TariffSpecification(broker: brokerList[1],
+									expiration: exp,
+									minDuration: TimeService.WEEK * 8)
+		tariffSpec2.addToRates(new Rate(value: 0.1))
+		assert(tariffSpec2.save())
+		tariffSpecList[1] = tariffSpec2
+		
+		TariffSpecification tariffSpec3 =
+			new TariffSpecification(broker: brokerList[2],
+			expiration: exp,
+			minDuration: TimeService.WEEK * 8)
+		tariffSpec3.addToRates(new Rate(value: 0.1))
+		assert(tariffSpec3.save())
+		tariffSpecList[2] = tariffSpec3
+		
+		// Create a tariff for each specification
+		Tariff tariff1 = new Tariff(tariffSpec: tariffSpecList[0])
+		tariff1.init()
+		assert(tariff1.save())
+		tariffList[0] = tariff1
+		
+		Tariff tariff2 = new Tariff(tariffSpec: tariffSpecList[1])
+		tariff2.init()
+		assert(tariff2.save())
+		tariffList[1] = tariff2
+		
+		Tariff tariff3 = new Tariff(tariffSpec: tariffSpecList[2])
+		tariff3.init()
+		assert(tariff3.save())
+		tariffList[2] = tariff3
+		
+		// Subscribe customers to each tariff
+		TariffSubscription tsub1 =
+			tariffMarketService.subscribeToTariff(tariffList[0], customer, 5)
+		TariffSubscription tsub2 =
+			tariffMarketService.subscribeToTariff(tariffList[1], customer, 5)
+		TariffSubscription tsub3 =
+			tariffMarketService.subscribeToTariff(tariffList[2], customer, 5)
+			
+		// Balance brokers such that balances are: 2, -4, and 0 (MWh) respectively
+		tsub1.usePower(2000)
+		tsub2.usePower(-4000)
+		
+		List solution = distributionUtilityService.computeNonControllableBalancingCharges(brokerList)
+		
+		// Correct solution list is [-4, 14, 2]
+		assertEquals("correct balancing charge broker1", -4, solution[0])
+		assertEquals("correct balancing charge broker2", 14, solution[1])
+		assertEquals("correct balancing charge broker3", 2, solution[2])
+	}
+} 
