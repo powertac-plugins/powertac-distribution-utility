@@ -63,5 +63,6 @@
 	</classpathentry>
 	<classpathentry combineaccessrules="false" kind="src" path="/powertac-common"/>
 	<classpathentry combineaccessrules="false" kind="src" path="/powertac-server-interface"/>
+	<classpathentry kind="lib" path="lib/ojalgo-29.59.jar"/>
 	<classpathentry kind="output" path="web-app/WEB-INF/classes"/>
 </classpath>
