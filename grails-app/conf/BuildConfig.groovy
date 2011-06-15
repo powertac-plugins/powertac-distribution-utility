@@ -35,8 +35,3 @@ grails.project.dependency.resolution = {
     // runtime 'mysql:mysql-connector-java:5.1.13'
   }
 }
-grails.project.dependency.distribution = {
-  remoteRepository(id: "powertacPlugins", url: "http://ibwstinger.iw.uni-karlsruhe.de/artifactory/plugins-release-local/") {
-    authentication username: "username", password: "password"
-  }
-}
