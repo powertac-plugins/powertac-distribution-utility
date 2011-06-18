@@ -157,7 +157,7 @@ class DistributionUtilityService implements TimeslotPhaseProcessor
     BasicMatrix result = myQuadraticSolver.solve().getSolution()
     List solutionList = []
     for(int i = 0; i < numOfBrokers; i++){
-      solutionList.add(result.toScalar(i, 0).getReal())
+      solutionList.add(result.doubleValue(i, 0))
     }
     return solutionList
   }

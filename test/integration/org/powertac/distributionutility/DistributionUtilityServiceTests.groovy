@@ -450,14 +450,14 @@ class DistributionUtilityServiceTests extends GrailsUnitTestCase
         tariffMarketService.subscribeToTariff(tariffList[2], customer, 5)
 
     // Balance brokers such that balances are: 2, -4, and 0 (MWh) respectively
-    tsub1.usePower(2000)
-    tsub2.usePower(-4000)
+    tsub1.usePower(-2000)
+    tsub2.usePower(4000)
 
     List solution = distributionUtilityService.computeNonControllableBalancingCharges(brokerList)
 
     // Correct solution list is [-4, 14, 2]
-    assertEquals("correct balancing charge broker1", -4, solution[0])
-    assertEquals("correct balancing charge broker2", 14, solution[1])
-    assertEquals("correct balancing charge broker3", 2, solution[2])
+    assertEquals("correct balancing charge broker1", -4, solution[0], 1e-6)
+    assertEquals("correct balancing charge broker2", 14, solution[1], 1e-6)
+    assertEquals("correct balancing charge broker3", 2, solution[2], 1e-6)
   }
 }
