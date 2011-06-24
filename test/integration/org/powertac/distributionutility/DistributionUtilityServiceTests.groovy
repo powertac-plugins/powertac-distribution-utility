@@ -9,10 +9,14 @@ import org.joda.time.DateTimeZone
 import org.joda.time.Instant
 
 import org.powertac.common.Broker
+import org.powertac.common.Competition
+import org.powertac.common.Orderbook
 import org.powertac.common.TimeService
 import org.powertac.common.AbstractCustomer
 import org.powertac.common.CustomerInfo
 import org.powertac.common.MarketTransaction
+import org.powertac.common.BalancingTransaction
+import org.powertac.common.DistributionTransaction
 import org.powertac.common.Rate
 import org.powertac.common.Tariff
 import org.powertac.common.TariffSpecification
@@ -34,8 +38,10 @@ class DistributionUtilityServiceTests extends GrailsUnitTestCase
   List<Broker> brokerList = []
   List tariffSpecList = []
   List tariffList = []
+  List messageList = []
   Instant exp
   DateTime start
+  Competition competition
   CustomerInfo customerInfo
   AbstractCustomer customer
 
@@ -80,42 +86,54 @@ class DistributionUtilityServiceTests extends GrailsUnitTestCase
       fail("Could not save customer")
     }
     assert(customer.save())
+    
+    // create a Competition, needed for initialization
+    if (Competition.count() == 0) {
+      competition = new Competition(name: 'du-test')
+      assert competition.save()
+    }
+    else {
+      competition = Competition.list().first()
+    }
 
     // mock the brokerProxyService
-    def msgs = []
     def brokerProxy =
       [sendMessage: { broker, message ->
-        msgs << message
+        messageList << message
       },
       sendMessages: { broker, messageList ->
         messageList.each { message ->
-          msgs << message
+          messageList << message
         }
       },
       broadcastMessage: { message ->
-        msgs << message
+        messageList << message
       },
       broadcastMessages: { messageList ->
         messageList.each { message ->
-          msgs << message
+          messageList << message
         }
       },
       registerBrokerTariffListener: { thing ->
         println "tariff listener registration"
       }]
     accountingService.brokerProxyService = brokerProxy
+    accountingService.pendingTransactions.clear()
   }
 
-  protected void tearDown() {
+  protected void tearDown() 
+  {
     super.tearDown()
-    accountingService.activate(timeService.currentTime, 3)
     TariffTransaction.list()*.delete()
+    BalancingTransaction.list()*.delete()
+    DistributionTransaction.list()*.delete()
     brokerList = []
     tariffSpecList = []
     tariffList = []
   }
 
-  void testGetMarketBalance() {
+  void testGetMarketBalance() 
+  {
     BigDecimal balance = 0.0
 
     // Create two tariff specifications, one for consumption and one for production
@@ -150,25 +168,26 @@ class DistributionUtilityServiceTests extends GrailsUnitTestCase
         tariffMarketService.subscribeToTariff(tariff2, customer, 5)
 
     tsubConsume.usePower(500.0)
-    balance -= 500.0 / 1000.0
-    assertEquals("correct balance",
+    balance -= 500.0
+    assertEquals("correct balance", balance,
         distributionUtilityService.getMarketBalance(brokerList[0]),
-        balance, 1e-6)
+        1e-6)
 
     tsubProduce.usePower(-500.0)
-    balance += 500.0 / 1000.0
-    assertEquals("correct balance",
+    balance += 500.0
+    assertEquals("correct balance", balance,
         distributionUtilityService.getMarketBalance(brokerList[0]),
-        balance, 1e-6)
+        1e-6)
 
     tsubConsume.usePower(50000)
-    balance -= 50000 / 1000
-    assertEquals("correct balance",
+    balance -= 50000
+    assertEquals("correct balance", balance,
         distributionUtilityService.getMarketBalance(brokerList[0]),
-        balance, 1e-6)
+        1e-6)
   }
 
-  void testNegImbalancedMarket() {
+  void testNegImbalancedMarket() 
+  {
     BigDecimal powerUse = 50.0
 
     // Create a tariff specification for each broker
@@ -225,27 +244,28 @@ class DistributionUtilityServiceTests extends GrailsUnitTestCase
     tsub2.usePower(powerUse)
     tsub3.usePower(powerUse)
 
-    BigDecimal marketBalance = powerUse * -3 / 1000.0 // Compute market balance in MWh
+    BigDecimal marketBalance = powerUse * -3 // Compute market balance in MWh
 
-    List marketTxs =
-        distributionUtilityService.balanceTimeslot(Timeslot.currentTimeslot(),
+    distributionUtilityService.balanceTimeslot(Timeslot.currentTimeslot(),
         brokerList)
 
-    for ( tx in marketTxs ){
+    assertEquals("correct number of balance tx", 3, BalancingTransaction.count ())
+    assertEquals("correct number of distro tx", 3, DistributionTransaction.count())
+    double distributionFees = 0.0 
+    BalancingTransaction.list().each { tx ->
       marketBalance -= tx.quantity
     }
-
-    assertEquals("Neg market: correct balancing transactions produced", 0.0, marketBalance, 1e-6)
+    assertEquals("correct balancing transactions", 0.0, marketBalance, 1e-6)
+    DistributionTransaction.list().each { tx ->
+      distributionFees += tx.charge
+    }
+    assertEquals("correct fee transactions",
+       powerUse * 3 * distributionUtilityService.distributionFee,
+       distributionFees, 1e-6)
   }
 
-  void testBalancedMarket() {
-    List marketTxs =
-        distributionUtilityService.balanceTimeslot(Timeslot.currentTimeslot(), brokerList)
-
-    assertEquals("Balanced market: no transactions produced", 0, marketTxs.size())
-  }
-
-  void testPosImbalancedMarket() {
+  void testPosImbalancedMarket()
+  {
     BigDecimal powerUse = -50.0
 
     // Create a production tariff specification for each broker
@@ -305,20 +325,28 @@ class DistributionUtilityServiceTests extends GrailsUnitTestCase
     tsub2.usePower(powerUse)
     tsub3.usePower(powerUse)
 
-    BigDecimal marketBalance = powerUse * -3 / 1000.0 // Compute market balance in MWh
+    BigDecimal marketBalance = powerUse * -3 // Compute market balance in MWh
 
-    List marketTxs =
-        distributionUtilityService.balanceTimeslot(Timeslot.currentTimeslot(),
+    distributionUtilityService.balanceTimeslot(Timeslot.currentTimeslot(),
         brokerList)
-
-    for ( tx in marketTxs ){
+        
+    assertEquals("correct number of balance tx", 3, BalancingTransaction.count ())
+    assertEquals("correct number of distro tx", 3, DistributionTransaction.count())
+    double distributionFees = 0.0
+    BalancingTransaction.list().each { tx ->
       marketBalance -= tx.quantity
     }
-
-    assertEquals("Pos market: correct balancing transactions produced", 0.0, marketBalance, 1e-6)
+    assertEquals("correct balancing transactions", 0.0, marketBalance, 1e-6)
+    DistributionTransaction.list().each { tx ->
+      distributionFees += tx.charge
+    }
+    assertEquals("correct fee transactions",
+      powerUse * 3 * distributionUtilityService.distributionFee,
+      distributionFees, 1e-6)
   }
 
-  void testIndividualBrokerBalancing() {
+  void testIndividualBrokerBalancing() 
+  {
     BigDecimal balance = 0.0
 
     // Create tariff specifications for each broker
@@ -375,20 +403,19 @@ class DistributionUtilityServiceTests extends GrailsUnitTestCase
     tsub3.usePower(5423)
 
     // Compute market balance
-    for( b in brokerList ){
+    brokerList.each  { b ->
       balance += distributionUtilityService.getMarketBalance(b)
     }
-    List mtxs =
-        distributionUtilityService.balanceTimeslot(Timeslot.currentTimeslot(), brokerList)
+    distributionUtilityService.balanceTimeslot(Timeslot.currentTimeslot(), brokerList)
 
     // ensure each broker was balanced correctly
     int i = 0
-    for( tx in mtxs ){
+    BalancingTransaction.list().each { tx ->
       // match correct broker to tx
       while( (i < brokerList.size()) && (brokerList[i].id != tx.broker.id) ){
         i++
       }
-      if ( i < brokerList.size() ){
+      if ( i < brokerList.size() ) {
         assertEquals("broker correctly balanced", 0.0,
             (distributionUtilityService.getMarketBalance(brokerList[i]) - tx.quantity),
             1e-6)
@@ -399,7 +426,8 @@ class DistributionUtilityServiceTests extends GrailsUnitTestCase
     assertEquals("market fully balanced", 0.0, balance, 1e-6)
   }
 
-  void testNonControllableBalancingCharges() {
+  void testScenario1BalancingCharges() 
+  {
     // Create a tariff specification for each broker
     TariffSpecification tariffSpec1 =
         new TariffSpecification(broker: brokerList[0],
@@ -450,14 +478,69 @@ class DistributionUtilityServiceTests extends GrailsUnitTestCase
         tariffMarketService.subscribeToTariff(tariffList[2], customer, 5)
 
     // Balance brokers such that balances are: 2, -4, and 0 (MWh) respectively
-    tsub1.usePower(-2000)
-    tsub2.usePower(4000)
+    tsub1.usePower(-200)
+    tsub2.usePower(400)
 
-    List solution = distributionUtilityService.computeNonControllableBalancingCharges(brokerList)
+    //List solution = distributionUtilityService.computeNonControllableBalancingCharges(brokerList)
+    distributionUtilityService.balanceTimeslot(Timeslot.currentTimeslot(), brokerList)
 
     // Correct solution list is [-4, 14, 2]
-    assertEquals("correct balancing charge broker1", -4, solution[0], 1e-6)
-    assertEquals("correct balancing charge broker2", 14, solution[1], 1e-6)
-    assertEquals("correct balancing charge broker3", 2, solution[2], 1e-6)
+    BalancingTransaction btx = BalancingTransaction.findByBroker(brokerList[0])
+    assertNotNull("non-null btx, broker 1", btx)
+    assertEquals("correct balancing charge broker1", -4, btx.charge, 1e-6)
+    btx = BalancingTransaction.findByBroker(brokerList[1])
+    assertNotNull("non-null btx, broker 2", btx)
+    assertEquals("correct balancing charge broker2", 14, btx.charge, 1e-6)
+    btx = BalancingTransaction.findByBroker(brokerList[2])
+    assertNotNull("non-null btx, broker 3", btx)
+    assertEquals("correct balancing charge broker3", 2, btx.charge, 1e-6)
+  }
+  
+  void testSpotPrice ()
+  {
+    // add some new timeslots
+    Timeslot ts0 = Timeslot.currentTimeslot()
+    long start = timeService.currentTime.millis
+    Timeslot ts1 = new Timeslot(serialNumber: 1,
+      startInstant: new Instant(start - TimeService.HOUR * 3),
+      endInstant: new Instant(start - TimeService.HOUR * 2),
+      enabled: false)
+    assert ts1.save()
+    Timeslot ts2 = new Timeslot(serialNumber: 2,
+      startInstant: new Instant(start - TimeService.HOUR * 2),
+      endInstant: new Instant(start - TimeService.HOUR),
+      enabled: false)
+    assert ts2.save()
+    Timeslot ts3 = new Timeslot(serialNumber: 3,
+      startInstant: new Instant(start - TimeService.HOUR),
+      endInstant: new Instant(start),
+      enabled: false)
+    assert ts3.save()
+    
+    // add some orderbooks
+    Orderbook ob = new Orderbook(transactionId: "ob3.3",
+      dateExecuted: new Instant(start - TimeService.HOUR * 3),
+      timeslot: ts3, clearingPrice: 33.0)
+    ts3.addToOrderbooks(ob)
+    assert ob.save()
+    ob = new Orderbook(transactionId: "ob3.2",
+      dateExecuted: new Instant(start - TimeService.HOUR * 2),
+      timeslot: ts3, clearingPrice: 32.0)
+    ts3.addToOrderbooks(ob)
+    assert ob.save()
+    ob = new Orderbook(transactionId: "ob0.2",
+      dateExecuted: new Instant(start - TimeService.HOUR * 2),
+      timeslot: ts0, clearingPrice: 20.2)
+    ts0.addToOrderbooks(ob)
+    assert ob.save()
+    // this should be the spot price
+    ob = new Orderbook(transactionId: "ob0.1",
+      dateExecuted: new Instant(start - TimeService.HOUR),
+      timeslot: ts0, clearingPrice: 20.1)
+    ts0.addToOrderbooks(ob)
+    assert ob.save()
+    
+    // make sure we can retrieve current spot price
+    assertEquals("correct spot price", 0.0201, distributionUtilityService.getSpotPrice())
   }
 }

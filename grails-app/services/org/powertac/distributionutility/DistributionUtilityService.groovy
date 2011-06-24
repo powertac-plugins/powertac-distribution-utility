@@ -27,31 +27,66 @@ import org.ojalgo.type.StandardType
 
 import org.joda.time.Instant
 import org.powertac.common.Broker
+import org.powertac.common.Competition
+import org.powertac.common.Orderbook
+import org.powertac.common.PluginConfig
 import org.powertac.common.Timeslot
+import org.powertac.common.TimeService
 import org.powertac.common.interfaces.TimeslotPhaseProcessor
 
 class DistributionUtilityService implements TimeslotPhaseProcessor
 {
-
-  def accountingService
-
   static transactional = true
 
-  // Rate per kWH
-  BigDecimal imbalancePenaltyRate = 0.1
+  def timeService
+  def accountingService
+  def competitionControlService
+  def randomSeedService
 
-  public void activate (Instant time, int phaseNumber)
+  Random randomGen
+  
+  // Rate per kWH
+  //BigDecimal imbalancePenaltyRate = 0.1
+  
+  BigDecimal distributionFee = 0.01
+  BigDecimal balancingCost = 0.06
+  BigDecimal defaultSpotPrice = 30.0 // per mwh
+  
+  int simulationPhase = 2 // after customer, before accounting
+  
+  /**
+   * Computes actual distribution and balancing costs by random selection
+   */
+  void init (PluginConfig config)
   {
-    List brokerList = Broker.list()
+    competitionControlService?.registerTimeslotPhase(this, simulationPhase)
+    BigDecimal distributionFeeMin = config.configuration['distributionFeeMin']?.toBigDecimal()
+    BigDecimal distributionFeeMax = config.configuration['distributionFeeMax']?.toBigDecimal()
+    BigDecimal balancingCostMin = config.configuration['balancingCostMin']?.toBigDecimal()
+    BigDecimal balancingCostMax = config.configuration['balancingCostMax']?.toBigDecimal()
+    long randomSeed = randomSeedService.nextSeed('DistributionUtilityService', 'du', 'model')
+    randomGen = new Random(randomSeed)
+    distributionFee = (distributionFeeMin +
+                       randomGen.nextDouble() * (distributionFeeMax -
+                                                 distributionFeeMin))
+    balancingCost = (balancingCostMin +
+                       randomGen.nextDouble() * (balancingCostMax -
+                                                 balancingCostMin))
+    
+    log.info "Configured DU: distro fee = $distributionFee, balancing cost = $balancingCost"
+  }
+
+  void activate (Instant time, int phaseNumber)
+  {
+    List brokerList = Broker.findAllByWholesale (false)
     if ( brokerList == null ){
-      log.error("Failed to retrieve broker list")
+      log.error("Failed to retrieve retail broker list")
       return
     }
 
     // Run the balancing market
     // Transactions are posted to the Accounting Service and Brokers are notified of balancing transactions
-    List txList = balanceTimeslot(timeslot.currentTimeslot(), brokerList)
-
+    balanceTimeslot(Timeslot.currentTimeslot(), brokerList)
   }
 
   /**
@@ -62,43 +97,80 @@ class DistributionUtilityService implements TimeslotPhaseProcessor
    * @return a broker's current energy balance within its market. Pos for over-production,
    * neg for under-production
    */
-  public BigDecimal getMarketBalance(Broker broker){
-    return accountingService.getCurrentMarketPosition(broker) -
-    (accountingService.getCurrentNetLoad(broker) / 1000.0)
+  BigDecimal getMarketBalance(Broker broker)
+  {
+    return accountingService.getCurrentMarketPosition(broker) * 1000.0 -
+            accountingService.getCurrentNetLoad(broker)
+  }
+  
+  /**
+   * Returns the spot market price - the clearing price for the current timeslot
+   * in the most recent trading period.
+   */
+  BigDecimal getSpotPrice ()
+  {
+    BigDecimal result = defaultSpotPrice
+    // most recent trade is determined by Competition parameters
+    Competition comp = Competition.currentCompetition()
+    int offset = comp.deactivateTimeslotsAhead
+    Instant executed = new Instant(timeService.currentTime.millis - 
+      offset * comp.timeslotLength * TimeService.MINUTE)
+    // orderbooks have timeslot and execution time
+    Orderbook ob = 
+      Orderbook.findByDateExecutedAndTimeslot(executed, Timeslot.currentTimeslot())
+    if (ob != null) {
+      result = ob.clearingPrice
+      if (result == null) {
+        result = ob.determineClearingPrice()
+      }
+      if (result == null) {
+        result = defaultSpotPrice
+      }
+    }
+    else {
+      log.info "null Orderbook"
+    }
+    return result / 1000.0 // convert to kwh
   }
 
   /**
-   * Generates a list of MarketTransactions that balance the overall market.  Transactions
+   * Generates a list of Transactions that balance the overall market.  Transactions
    * are generated on a per-broker basis depending on the broker's balance within its own market.
    * 
    * @return List of MarketTransactions 
    */
-  public List balanceTimeslot (Timeslot currentTimeslot, List brokerList)
+  void balanceTimeslot (Timeslot currentTimeslot, List brokerList)
   {
-    List balancingMarketTxs = []
-    BigDecimal balance
+    List brokerBalance = brokerList.collect { broker ->
+      getMarketBalance(broker)
+    }
+    List balanceCharges = 
+      computeNonControllableBalancingCharges(brokerList, brokerBalance)
 
-    // Charge each broker an equal amount if marketBalance is neg, credit each broker if pos
-    // TODO need to rewrite so that all brokers receive a market transaction, even if they are not charged
-    for ( b in brokerList ){
-      balance = getMarketBalance(b)
-      if( balance != 0.0 ){
-        balancingMarketTxs.add( accountingService.addMarketTransaction( b,
-            currentTimeslot,
-            (balance * imbalancePenaltyRate),
-            balance ) )
+    def chargeInfo = []
+    // Add transactions for distribution and balancing
+    brokerList.eachWithIndex { broker, b ->
+      // first, charge for distribution
+      def netLoad = accountingService.getCurrentNetLoad(broker)
+      accountingService.addDistributionTransaction(broker, netLoad, netLoad * distributionFee)
+
+      // then charge for balancing
+      def balanceCharge = balanceCharges[b]
+      chargeInfo << [broker.username, netLoad, balanceCharge]
+      if( balanceCharge != 0.0 ){
+        accountingService.addBalancingTransaction(broker, brokerBalance[b], balanceCharge)
       }
     }
-    return balancingMarketTxs
+    log.info "balancing charges: ${chargeInfo}"
   }
 
-  public List computeNonControllableBalancingCharges(List brokerList)
+  List computeNonControllableBalancingCharges(List brokerList, List balanceList)
   {
     QuadraticSolver myQuadraticSolver
     BasicMatrix[] inputMatrices = new BigMatrix[6]
     int numOfBrokers = brokerList.size()
-    double P = 3 // market price in day ahead market, TODO: find out where to get it
-    double c0 = 6 // cost function per unit of energy produced by the DU, TODO: find out where to get it
+    double P = getSpotPrice() // market price in day ahead market
+    double c0 = balancingCost // cost function per unit of energy produced by the DU
     double x = 0 // total market balance
     double[] brokerBalance = new double[numOfBrokers]
 
@@ -110,7 +182,7 @@ class DistributionUtilityService implements TimeslotPhaseProcessor
     double[][] BI = new double[numOfBrokers + 1][1]  // inequality constraints rhs
 
     for(int i = 0; i < numOfBrokers; i++){
-      x += brokerBalance[i] = getMarketBalance(brokerList[i])
+      x += brokerBalance[i] = balanceList[i]
     }
 
     // Initialize all the matrices with the proper values
