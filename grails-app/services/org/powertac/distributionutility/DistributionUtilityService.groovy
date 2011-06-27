@@ -117,7 +117,7 @@ class DistributionUtilityService implements TimeslotPhaseProcessor
       offset * comp.timeslotLength * TimeService.MINUTE)
     // orderbooks have timeslot and execution time
     Orderbook ob = 
-      Orderbook.findByDateExecutedAndTimeslot(executed, Timeslot.currentTimeslot())
+      Orderbook.findByTimeslot(Timeslot.currentTimeslot())
     if (ob != null) {
       result = ob.clearingPrice
       if (result == null) {
